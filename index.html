@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Rainy Window</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@1,400&display=swap" rel="stylesheet">
+<style>
+  :root { --wall:#15161b; --frame:#0d0e12; --paint:#2a2c34; }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; background: var(--wall); overflow: hidden; }
+  body {
+    background:
+      radial-gradient(ellipse at 60% 40%, rgba(255,190,120,.05), transparent 60%),
+      radial-gradient(ellipse at 50% 50%, #1b1c22, #0c0d10 90%);
+    font-family: "Cormorant Garamond", Georgia, serif;
+  }
+  .win {
+    position: absolute; inset: 5vh 6vw 11vh;
+    border: 14px solid var(--paint);
+    outline: 4px solid var(--frame);
+    box-shadow: inset 0 0 0 3px #08090c, 0 0 80px rgba(0,0,0,.8);
+    background: #000; overflow: hidden;
+  }
+  .win canvas { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; cursor: crosshair; }
+  .glare { position: absolute; inset: 0; pointer-events: none;
+    background: linear-gradient(115deg, rgba(255,255,255,.05) 0%, transparent 28%, transparent 70%, rgba(255,255,255,.03) 100%),
+                radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,.55)); }
+  .sill { position: absolute; left: 4vw; right: 4vw; bottom: 7.5vh; height: 3.5vh; background: linear-gradient(#2c2e37,#17181d); box-shadow: 0 8px 24px rgba(0,0,0,.7); }
+  .curtain {
+    position: absolute; top: 0; bottom: 0; width: 25%; pointer-events: none;
+    filter: brightness(var(--b, .5)); transition: filter .05s;
+    background:
+      radial-gradient(circle at 50% 50%, transparent 0 3px, rgba(255,255,255,.45) 3.5px 4.6px, transparent 5.2px) 0 0/16px 16px,
+      repeating-linear-gradient(90deg, rgba(236,237,246,.80) 0 16px, rgba(178,181,200,.72) 16px 30px, rgba(242,243,250,.82) 30px 46px);
+  }
+  .curtain.l { left: 0; clip-path: polygon(0 0,100% 0,84% 45%,96% 100%,0 100%);
+    -webkit-mask-image: linear-gradient(90deg,#000 55%,transparent); mask-image: linear-gradient(90deg,#000 55%,transparent); }
+  .curtain.r { right: 0; clip-path: polygon(0 0,100% 0,100% 100%,4% 100%,16% 45%);
+    -webkit-mask-image: linear-gradient(270deg,#000 55%,transparent); mask-image: linear-gradient(270deg,#000 55%,transparent); }
+  .rod { position: absolute; top: 0; left: 0; right: 0; height: 1.6vh; background: linear-gradient(#26272e,#0e0f12); pointer-events: none; }
+  #hint { position: absolute; left: 0; right: 0; bottom: 2.2vh; text-align: center; color: #9aa0b3; font-style: italic; font-size: clamp(16px, 2.4vw, 22px); letter-spacing: .02em; transition: opacity 2s; pointer-events: none; }
+  .ctrl { position: absolute; right: 2vw; bottom: 1.6vh; display: flex; gap: 8px; }
+  .ctrl button { background: none; border: 1px solid #3a3d49; color: #9aa0b3; font: italic 16px "Cormorant Garamond", Georgia, serif; padding: 6px 14px; border-radius: 2px; cursor: pointer; }
+  .ctrl button:hover, .ctrl button:focus-visible { color: #e6e8f2; border-color: #7a8095; outline: none; }
+</style>
+</head>
+<body>
+<div class="win" id="win">
+  <canvas id="view" aria-label="Rainy window. Drag your finger or mouse across the fogged glass to write."></canvas>
+  <div class="glare"></div>
+  <div class="curtain l"></div><div class="curtain r"></div>
+  <div class="rod"></div>
+</div>
+<div class="sill"></div>
+<p id="hint">Run your finger across the glass.</p>
+<audio id="bgm" src="music.mp3" loop preload="none"></audio>
+<div class="ctrl">
+  <button id="mus" type="button">Music: off</button>
+  <button id="snd" type="button">Rain sound: off</button>
+</div>
+
+<script>
+(() => {
+  const win = document.getElementById('win'), cv = document.getElementById('view'), ctx = cv.getContext('2d');
+  const curtains = document.querySelectorAll('.curtain');
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const mk = (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; };
+  const rng = a => () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+
+  let W, H, S, scene, blurred, tmp, fog, fctx, drops, rain, frame = 0, flash = 0, bolt = null, lamp;
+
+  function buildScene() {
+    const c = mk(W, H), g = c.getContext('2d'), r = rng(7);
+    const y0 = H * .64;
+    let gr = g.createLinearGradient(0, 0, 0, y0);
+    gr.addColorStop(0, '#06080d'); gr.addColorStop(.6, '#0d1522'); gr.addColorStop(1, '#16202e');
+    g.fillStyle = gr; g.fillRect(0, 0, W, H);
+    // far buildings
+    for (let x = 0; x < W; x += W * .05) {
+      const bw = W * (.04 + r() * .05), bh = H * (.12 + r() * .2);
+      g.fillStyle = '#0a0f17'; g.fillRect(x, y0 - bh, bw, bh);
+      for (let k = 0; k < 4; k++) if (r() > .6) { g.fillStyle = 'rgba(255,200,130,.35)'; g.fillRect(x + r() * (bw - 6), y0 - r() * bh, 4 * S, 5 * S); }
+    }
+    // road
+    gr = g.createLinearGradient(0, y0, 0, H);
+    gr.addColorStop(0, '#111823'); gr.addColorStop(1, '#05070a');
+    g.fillStyle = gr; g.fillRect(0, y0, W, H - y0);
+    g.fillStyle = '#1a222d'; g.fillRect(0, y0 - 3 * S, W, 5 * S);
+    // trees
+    const tree = (x, base, h, w, col) => {
+      g.fillStyle = '#050707'; g.fillRect(x - w * .04, base - h * .5, w * .08, h * .5);
+      g.fillStyle = col;
+      for (let i = 0; i < 26; i++) {
+        const t = r(), cx = x + (r() - .5) * w, cy = base - h * (.35 + t * .65), rad = w * (.16 + r() * .22);
+        g.beginPath(); g.ellipse(cx, cy, rad, rad * .8, 0, 0, 7); g.fill();
+      }
+    };
+    [[.36,.62,.3,.12],[.45,.62,.26,.1],[.72,.62,.28,.11],[.82,.64,.5,.2],[.07,.66,.62,.22],[.22,.65,.42,.15],[.95,.66,.6,.2]]
+      .forEach(([x, b, h, w], i) => tree(W * x, H * b, H * h, W * w, i % 2 ? '#0a1311' : '#0c1815'));
+    // lamp
+    const lx = W * .6, ly = H * .27;
+    g.fillStyle = '#04060a'; g.fillRect(lx - 3 * S, ly, 6 * S, H * .39);
+    g.beginPath(); g.ellipse(lx, ly, 14 * S, 6 * S, 0, 0, 7); g.fill();
+    g.globalCompositeOperation = 'screen';
+    gr = g.createRadialGradient(lx, ly, 0, lx, ly, H * .45);
+    gr.addColorStop(0, 'rgba(255,224,170,.95)'); gr.addColorStop(.05, 'rgba(255,196,120,.55)');
+    gr.addColorStop(.3, 'rgba(255,160,80,.14)'); gr.addColorStop(1, 'rgba(255,140,60,0)');
+    g.fillStyle = gr; g.fillRect(0, 0, W, H);
+    // wet road reflection
+    for (let y = y0; y < H; y += 2 * S) {
+      const t = (y - y0) / (H - y0), w = W * (.012 + t * .05) * (.6 + r() * .8);
+      g.fillStyle = `rgba(255,190,115,${.42 * (1 - t * .55) * (.5 + r() * .5)})`;
+      g.fillRect(lx - w / 2 + Math.sin(y * .25) * 4 * S, y, w, 2 * S);
+    }
+    gr = g.createRadialGradient(lx, y0 + 8 * S, 0, lx, y0 + 8 * S, W * .3);
+    gr.addColorStop(0, 'rgba(255,180,100,.22)'); gr.addColorStop(1, 'rgba(255,180,100,0)');
+    g.save(); g.scale(1, .35); g.translate(0, (y0 + 8 * S) / .35 - (y0 + 8 * S)); g.fillStyle = gr; g.fillRect(0, 0, W, H / .35); g.restore();
+    // puddle sheen + bokeh
+    for (let i = 0; i < 9; i++) { g.fillStyle = 'rgba(90,120,160,.10)'; g.beginPath(); g.ellipse(r() * W, y0 + (H - y0) * (.2 + r() * .7), W * (.03 + r() * .06), 4 * S, 0, 0, 7); g.fill(); }
+    const cols = ['255,190,120', '255,110,90', '150,190,255'];
+    for (let i = 0; i < 12; i++) { const bx = r() * W, by = y0 - H * (.02 + r() * .12), rr = (3 + r() * 5) * S; gr = g.createRadialGradient(bx, by, 0, bx, by, rr * 3); const c2 = cols[i % 3]; gr.addColorStop(0, `rgba(${c2},.6)`); gr.addColorStop(1, `rgba(${c2},0)`); g.fillStyle = gr; g.fillRect(bx - rr * 3, by - rr * 3, rr * 6, rr * 6); }
+    g.globalCompositeOperation = 'source-over';
+    lamp = { x: lx, y: ly };
+    return c;
+  }
+
+  function buildBlur() {
+    const sm = mk(Math.ceil(W / 9), Math.ceil(H / 9)), g = sm.getContext('2d');
+    g.imageSmoothingQuality = 'high'; g.drawImage(scene, 0, 0, sm.width, sm.height);
+    const c = mk(W, H), k = c.getContext('2d'); k.imageSmoothingQuality = 'high';
+    k.drawImage(sm, 0, 0, W, H);
+    k.fillStyle = 'rgba(140,155,180,.17)'; k.fillRect(0, 0, W, H);
+    return c;
+  }
+
+  function init() {
+    S = Math.min(devicePixelRatio || 1, 1.5);
+    W = cv.width = Math.round(win.clientWidth * S); H = cv.height = Math.round(win.clientHeight * S);
+    scene = buildScene(); blurred = buildBlur(); tmp = mk(W, H);
+    fog = mk(W, H); fctx = fog.getContext('2d');
+    fctx.fillStyle = 'rgba(255,255,255,.93)'; fctx.fillRect(0, 0, W, H);
+    const r = Math.random;
+    drops = Array.from({ length: Math.round(W * H / 9000) }, () => ({ x: r() * W, y: r() * H, r: (1.2 + r() * 3.6) * S, mv: false }));
+    rain = Array.from({ length: Math.round(W / 7) }, () => ({ x: r() * W * 1.1, y: r() * H, l: (10 + r() * 22) * S, v: (14 + r() * 14) * S, a: .08 + r() * .2 }));
+  }
+
+  // --- lightning ---
+  function strike() {
+    if (reduce) return;
+    flash = 1;
+    let x = W * (.1 + Math.random() * .8), y = 0; bolt = [[x, y]];
+    while (y < H * .6) { y += H * (.03 + Math.random() * .05); x += (Math.random() - .5) * W * .06; bolt.push([x, y]); }
+    setTimeout(() => flash = Math.max(flash, .85), 140);
+    thunder(.4 + Math.random() * 2.6);
+  }
+  (function schedule(first) { setTimeout(() => { strike(); schedule(); }, first ? 7000 : 11000 + Math.random() * 16000); })(true);
+
+  // --- drawing on the glass ---
+  let down = false, last = null, wrote = false;
+  const pos = e => { const b = cv.getBoundingClientRect(); return [(e.clientX - b.left) * W / b.width, (e.clientY - b.top) * H / b.height]; };
+  function wipe(a, b) {
+    fctx.globalCompositeOperation = 'destination-out'; fctx.lineCap = fctx.lineJoin = 'round';
+    fctx.strokeStyle = 'rgba(0,0,0,.35)'; fctx.lineWidth = 28 * S; fctx.beginPath(); fctx.moveTo(...a); fctx.lineTo(...b); fctx.stroke();
+    fctx.strokeStyle = '#000'; fctx.lineWidth = 17 * S; fctx.beginPath(); fctx.moveTo(...a); fctx.lineTo(...b); fctx.stroke();
+    fctx.globalCompositeOperation = 'source-over';
+    if (Math.random() < .035) drops.push({ x: b[0], y: b[1], r: (3 + Math.random() * 2) * S, mv: true, vy: (.5 + Math.random()) * S, pause: 0 });
+  }
+  cv.addEventListener('pointerdown', e => { down = true; cv.setPointerCapture(e.pointerId); last = pos(e); wipe(last, last); if (!wrote) { wrote = true; document.getElementById('hint').style.opacity = 0; } });
+  cv.addEventListener('pointermove', e => { if (!down) return; const p = pos(e); wipe(last, p); last = p; });
+  ['pointerup', 'pointercancel'].forEach(t => cv.addEventListener(t, () => down = false));
+
+  // --- main loop ---
+  function loop() {
+    frame++;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.drawImage(scene, 0, 0);
+    // falling rain outside
+    ctx.lineWidth = S; 
+    for (const d of rain) {
+      d.y += d.v; d.x -= d.v * .12; if (d.y > H) { d.y = -d.l; d.x = Math.random() * W * 1.1; }
+      ctx.strokeStyle = `rgba(175,195,225,${d.a})`; ctx.beginPath(); ctx.moveTo(d.x, d.y); ctx.lineTo(d.x + d.l * .12, d.y - d.l); ctx.stroke();
+    }
+    if (flash > .02) {
+      if (bolt && flash > .5) {
+        ctx.strokeStyle = `rgba(225,235,255,${flash})`; ctx.lineWidth = 2.5 * S; ctx.shadowColor = '#9bb4ff'; ctx.shadowBlur = 18 * S;
+        ctx.beginPath(); bolt.forEach((p, i) => i ? ctx.lineTo(...p) : ctx.moveTo(...p)); ctx.stroke(); ctx.shadowBlur = 0;
+      }
+      ctx.globalCompositeOperation = 'screen'; ctx.fillStyle = `rgba(150,172,225,${flash * .5})`; ctx.fillRect(0, 0, W, H); ctx.globalCompositeOperation = 'source-over';
+    }
+    // fogged layer, masked by what hasn't been wiped
+    const t = tmp.getContext('2d');
+    t.globalCompositeOperation = 'source-over'; t.clearRect(0, 0, W, H); t.drawImage(blurred, 0, 0);
+    if (flash > .02) { t.globalCompositeOperation = 'screen'; t.fillStyle = `rgba(160,180,225,${flash * .45})`; t.fillRect(0, 0, W, H); }
+    t.globalCompositeOperation = 'destination-in'; t.drawImage(fog, 0, 0);
+    ctx.drawImage(tmp, 0, 0);
+    // fog slowly returns
+    if (frame % 6 === 0) { fctx.globalCompositeOperation = 'lighter'; fctx.fillStyle = 'rgba(255,255,255,.006)'; fctx.fillRect(0, 0, W, H); fctx.globalCompositeOperation = 'source-over'; }
+    // droplets
+    if (frame % 110 === 0) { const d = drops[(Math.random() * drops.length) | 0]; if (d && !d.mv) { d.mv = true; d.r *= 1.5; d.vy = (.4 + Math.random() * .9) * S; d.pause = 0; } }
+    if (frame % 70 === 0) drops.push({ x: Math.random() * W, y: Math.random() * H * .6, r: (4 + Math.random() * 3) * S, mv: true, vy: (.5 + Math.random()) * S, pause: 0 });
+    for (let i = drops.length - 1; i >= 0; i--) {
+      const d = drops[i];
+      if (d.mv) {
+        if (d.pause > 0) d.pause--; else {
+          const oy = d.y; d.y += d.vy * (1 + Math.random()); d.r *= .9993;
+          fctx.globalCompositeOperation = 'destination-out'; fctx.strokeStyle = 'rgba(0,0,0,.55)'; fctx.lineWidth = d.r * .9;
+          fctx.beginPath(); fctx.moveTo(d.x, oy); fctx.lineTo(d.x, d.y); fctx.stroke(); fctx.globalCompositeOperation = 'source-over';
+          if (Math.random() < .015) d.pause = 20 + (Math.random() * 60 | 0);
+          if (d.r < 2.2 * S) d.mv = false;
+        }
+        if (d.y > H + 10) { drops.splice(i, 1); continue; }
+      }
+      ctx.beginPath(); ctx.ellipse(d.x, d.y, d.r * .85, d.r, 0, 0, 7);
+      ctx.fillStyle = 'rgba(12,18,30,.28)'; ctx.fill();
+      ctx.strokeStyle = 'rgba(205,220,240,.3)'; ctx.lineWidth = .8 * S; ctx.stroke();
+      ctx.beginPath(); ctx.arc(d.x - d.r * .25, d.y - d.r * .35, d.r * .25, 0, 7);
+      const near = Math.hypot(d.x - lamp.x, d.y - lamp.y) < H * .4;
+      ctx.fillStyle = near ? 'rgba(255,225,170,.6)' : 'rgba(255,255,255,.4)'; ctx.fill();
+    }
+    flash *= .9;
+    const b = .5 + flash * .9; curtains.forEach(c => c.style.setProperty('--b', b.toFixed(2)));
+    requestAnimationFrame(loop);
+  }
+
+  // --- audio: rain + music (music is generated in the browser, or plays music.mp3 if you add one) ---
+  let ac, rainGain, musicGain, rainOn = false, musicOn = false, genTimer = null, usingFile = false, fadeT;
+  const bgm = document.getElementById('bgm'), btn = document.getElementById('snd'), mus = document.getElementById('mus');
+  bgm.volume = 0;
+  function noiseBuf(sec) { const b = ac.createBuffer(1, ac.sampleRate * sec, ac.sampleRate), d = b.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1; return b; }
+  function ramp(g, v, sec) { g.gain.cancelScheduledValues(ac.currentTime); g.gain.setValueAtTime(g.gain.value, ac.currentTime); g.gain.linearRampToValueAtTime(v, ac.currentTime + sec); }
+  function fadeTo(v, done) {
+    clearInterval(fadeT);
+    fadeT = setInterval(() => {
+      const d = v - bgm.volume;
+      if (Math.abs(d) < .03) { bgm.volume = v; clearInterval(fadeT); done && done(); } else bgm.volume = Math.min(1, Math.max(0, bgm.volume + Math.sign(d) * .03));
+    }, 60);
+  }
+  function ensureAudio() {
+    if (ac) { ac.resume(); return; }
+    ac = new (window.AudioContext || window.webkitAudioContext)();
+    rainGain = ac.createGain(); rainGain.gain.value = 0; rainGain.connect(ac.destination);
+    const buf = noiseBuf(3);
+    const a = ac.createBufferSource(); a.buffer = buf; a.loop = true;
+    const hp = ac.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 700;
+    const lp = ac.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 7000;
+    const g1 = ac.createGain(); g1.gain.value = .22; a.connect(hp).connect(lp).connect(g1).connect(rainGain); a.start();
+    const b = ac.createBufferSource(); b.buffer = buf; b.loop = true; b.playbackRate.value = .7;
+    const lp2 = ac.createBiquadFilter(); lp2.type = 'lowpass'; lp2.frequency.value = 500;
+    const g2 = ac.createGain(); g2.gain.value = .3; b.connect(lp2).connect(g2).connect(rainGain); b.start();
+    // music bus with a soft room reverb
+    musicGain = ac.createGain(); musicGain.gain.value = 0; musicGain.connect(ac.destination);
+    const len = ac.sampleRate * 3, imp = ac.createBuffer(2, len, ac.sampleRate);
+    for (let c = 0; c < 2; c++) { const d = imp.getChannelData(c); for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3); }
+    const conv = ac.createConvolver(); conv.buffer = imp; const wet = ac.createGain(); wet.gain.value = .55;
+    musicGain.connect(conv); conv.connect(wet).connect(ac.destination);
+  }
+  function thunder(delay) {
+    if (!ac || !rainOn) return;
+    const s = ac.createBufferSource(); s.buffer = noiseBuf(6);
+    const lp = ac.createBiquadFilter(); lp.type = 'lowpass'; const t0 = ac.currentTime + delay;
+    lp.frequency.setValueAtTime(260, t0); lp.frequency.exponentialRampToValueAtTime(55, t0 + 4);
+    const g = ac.createGain(); g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(1.1, t0 + .35); g.gain.exponentialRampToValueAtTime(.001, t0 + 5);
+    s.connect(lp).connect(g).connect(rainGain); s.start(t0); s.stop(t0 + 6);
+  }
+
+  // slow, soft piano-like piece in D major, played live by the browser (3/4, ~64 bpm)
+  const BEAT = 60 / 64, PENT = [62, 64, 66, 69, 71, 74, 76, 78];
+  const CH = [
+    { bass: 43, up: [59, 62, 66] },  // G maj7
+    { bass: 38, up: [57, 61, 66] },  // D maj7
+    { bass: 40, up: [59, 62, 67] },  // E min9
+    { bass: 45, up: [62, 64, 67] }   // A sus
+  ];
+  let nextT = 0, beat = 0, mel = 3;
+  function note(m, t, vel, dur) {
+    const f = 440 * Math.pow(2, (m - 69) / 12), g = ac.createGain(), lp = ac.createBiquadFilter();
+    lp.type = 'lowpass'; lp.frequency.value = 1800 + vel * 3000;
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vel, t + .012); g.gain.exponentialRampToValueAtTime(.0008, t + dur);
+    [['sine', 1, 1], ['triangle', 2, .22], ['sine', 3, .06]].forEach(([type, mul, amp]) => {
+      const o = ac.createOscillator(), og = ac.createGain(); o.type = type; o.frequency.value = f * mul; og.gain.value = amp;
+      o.connect(og).connect(lp); o.start(t); o.stop(t + dur + .1);
+    });
+    lp.connect(g).connect(musicGain);
+  }
+  function sched() {
+    while (nextT < ac.currentTime + 1.2) {
+      const bar = Math.floor(beat / 3), b = beat % 3, ch = CH[Math.floor(bar / 2) % CH.length];
+      if (b === 0) note(ch.bass, nextT, .42, 4.5);
+      else ch.up.forEach((m, i) => note(m, nextT + i * .035, b === 1 ? .13 : .09, 2.8));
+      if ((b === 0 && Math.random() < .8) || (b === 2 && Math.random() < .3)) {
+        mel = Math.min(PENT.length - 1, Math.max(0, mel + [-2, -1, -1, 0, 1, 1, 2][(Math.random() * 7) | 0]));
+        note(PENT[mel], nextT + .02, .26, 3.8);
+      }
+      nextT += BEAT; beat++;
+    }
+  }
+  function startGen() { if (genTimer) return; nextT = ac.currentTime + .25; beat = 0; genTimer = setInterval(sched, 300); sched(); }
+  function stopGen() { clearInterval(genTimer); genTimer = null; }
+
+  function setRain(on) {
+    rainOn = on; ensureAudio(); ramp(rainGain, on ? .9 : 0, 1.2);
+    btn.textContent = 'Rain sound: ' + (on ? 'on' : 'off');
+  }
+  function setMusic(on) {
+    musicOn = on; ensureAudio(); mus.textContent = 'Music: ' + (on ? 'on' : 'off');
+    if (on) {
+      bgm.play().then(() => { usingFile = true; fadeTo(.55); })
+        .catch(() => { usingFile = false; startGen(); ramp(musicGain, .85, 2); });
+    } else if (usingFile) { fadeTo(0, () => bgm.pause()); }
+    else { ramp(musicGain, 0, 1.5); setTimeout(() => { if (!musicOn) stopGen(); }, 1700); }
+  }
+  btn.addEventListener('click', () => { const on = !rainOn; setRain(on); setMusic(on); });
+  mus.addEventListener('click', () => setMusic(!musicOn));
+
+  let rt; addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(init, 200); });
+  init(); loop();
+})();
+</script>
+</body>
+  </html>
